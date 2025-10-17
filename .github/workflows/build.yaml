@@ -1,0 +1,22 @@
+name: Build
+on:
+  workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Linux
+        uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc flex bison libssl-dev libelf-dev
+      - name: Build
+        run: |
+          make O=output.rgb30 rgb30_consoleonly_defconfig
+          time make O=output.rgb30 -j2
+          rm -rf output.rgb30/build output.rgb30/host output.rgb30/target output.rgb30/staging
+          sudo board/rgb30/mk-flashable-img.sh
+      - name: Archive build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: rgb30-linux-build
+          path: output.rgb30/images/tinilinux-rgb30.img
