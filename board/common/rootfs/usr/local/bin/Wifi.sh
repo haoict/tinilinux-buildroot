@@ -24,76 +24,40 @@
 # Wi-Fi-dialog
 #
 
+export TERM=linux
+export XDG_RUNTIME_DIR=/run/user/$UID/
+
 ## hack: since we have getty3 (buildroot login promt), it will interfere with dialog, so we need to use an empty tty (3)
 chvt 3
 
 sudo chmod 666 /dev/tty3
-#printf "\033c" > /dev/tty3
 reset
 
 # hide cursor
 printf "\e[?25l" >/dev/tty3
 dialog --clear
+printf "\033c" >/dev/tty3
+printf "Starting Wifi Manager.  Please wait..." >/dev/tty3
 
 height="15"
 width="55"
 
-if test ! -z "$(cat /home/ark/.config/.DEVICE | grep RG503 | tr -d '\0')"; then
-  height="20"
-  width="60"
-fi
-
-export TERM=linux
-export XDG_RUNTIME_DIR=/run/user/$UID/
-
-if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
-  if test ! -z "$(cat /home/ark/.config/.DEVICE | grep RG503 | tr -d '\0')"; then
-    sudo setfont /usr/share/consolefonts/Lat7-TerminusBold20x10.psf.gz
-  else
-    sudo setfont /usr/share/consolefonts/Lat7-TerminusBold22x11.psf.gz
-  fi
-else
-  sudo setfont /usr/share/consolefonts/Lat7-Terminus16.psf.gz
-fi
-
-printf "\033c" >/dev/tty3
-printf "Starting Wifi Manager.  Please wait..." >/dev/tty3
-
 old_ifs="$IFS"
 
-ToggleWifi() {
-  dialog --infobox "\nTurning Wifi $1, please wait..." 5 $width >/dev/tty3
-  if [[ ${1} == "Off" ]]; then
-    sudo systemctl stop NetworkManager &
-    sudo systemctl disable NetworkManager &
-    sudo rfkill block wlan
-  else
-    sudo rfkill unblock wlan
-    sudo systemctl enable NetworkManager
-    sudo systemctl start NetworkManager
-    sleep 5
+###################################
+# Wifi functions
+###################################
+CURRENT_CONNECTED_SSID=""
+getCurrentConnectedSSID() {
+  CURRENT_CONNECTED_SSID=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
+  if [[ -z $CURRENT_CONNECTED_SSID ]]; then
+    CURRENT_CONNECTED_SSID=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
   fi
-  MainMenu
 }
 
-ExitMenu() {
-  printf "\033c" >/dev/tty3
-  ps aux | grep gptokeyb | grep -v grep | awk '{print $1}' | xargs kill -9
-  if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
-    sudo setfont /usr/share/consolefonts/Lat7-Terminus20x10.psf.gz
-  fi
+deleteConnection() {
 
-  chvt 1
-  exit 0
-}
-
-DeleteConnect() {
-  cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $cur_ap ]]; then
-    cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-  fi
-
-  dialog --clear --backtitle "Delete Connection: Currently connected to $cur_ap" --title "Removing $1" --clear \
+  dialog --clear --title "Removing $1" --clear \
     --yesno "\nWould you like to continue to remove this connection?" $height $width 2>&1 >/dev/tty3
   if [[ $? != 0 ]]; then
     chvt 1
@@ -103,53 +67,40 @@ DeleteConnect() {
   0) sudo rm -f "/etc/NetworkManager/system-connections/$1.nmconnection" ;;
   esac
 
-  Delete
+  DeleteMenu
 }
 
-Activate() {
+connectExisting() {
+  getCurrentConnectedSSID
 
-  cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $cur_ap ]]; then
-    cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
+  dialog --infobox "\nConnecting to: $1 ..." 5 $width >/dev/tty3
+
+  nmcli con down "$CURRENT_CONNECTED_SSID" >>/dev/null
+  sleep 1
+
+  output=$(nmcli con up "$1")
+
+  success=$(echo "$output" | grep successfully)
+
+  if [ -z "$success" ]; then
+    dialog --infobox "\nFailed to connect to $1" 6 $width >/dev/tty3
+    sleep 3
+    ActivateExistingMenu
+  else
+    NetworkInfo "Device successfully activated and connected to: "
+    MainMenu
   fi
-
-  declare aoptions=()
-  while IFS= read -r -d $'\n' ssid; do
-    aoptions+=("$ssid" ".")
-  done < <(ls -1 /etc/NetworkManager/system-connections/ | sed 's/.\{13\}$//' | sed -e 's/$//')
-
-  while true; do
-    aselection=(dialog
-      --backtitle "Existing Connections: Currently connected to $cur_ap"
-      --title "Which existing connection would you like to connect to?"
-      --no-collapse
-      --clear
-      --cancel-label "Back"
-      --menu "" $height $width 15)
-
-    achoice=$("${aselection[@]}" "${aoptions[@]}" 2>&1 >/dev/tty3) || MainMenu
-    if [[ $? != 0 ]]; then
-      chvt 1
-      exit 1
-    fi
-
-    # There is only one choice possible
-    ConnectExisting "$achoice"
-  done
-
 }
 
-Select() {
-  ps aux | grep gptokeyb | grep -v grep | awk '{print $1}' | xargs kill -9
+makeConnection() {
+  ps aux | grep gptokeyb2 | grep -v grep | awk '{print $1}' | xargs kill -9
   # get password from input
   LD_LIBRARY_PATH=/usr/local/lib /usr/local/bin/SimpleTerminal -d "/usr/local/bin/enter-wifi-password.sh"
   PASS=$(cat /tmp/wifi-password.txt)
-  /opt/inttools/gptokeyb -1 "Wifi.sh" -c "/opt/inttools/keys.gptk" >/dev/null &
-  if [[ ! -e "/dev/input/by-path/platform-odroidgo2-joypad-event-joystick" ]]; then
-    sudo setfont /usr/share/consolefonts/Lat7-TerminusBold24x12.psf.gz
-  fi
+  rm -f /tmp/wifi-password.txt
+  /usr/local/bin/gptokeyb2 -1 "Wifi.sh" -c "/root/gptokeyb2.ini" >/dev/null &
 
-  dialog --infobox "\nConnecting to Wi-Fi $1 ..." 5 $width >/dev/tty3
+  dialog --infobox "\nConnecting to: $1 ..." 5 $width >/dev/tty3
   clist2=$(sudo nmcli -f ALL --mode tabular --terse --fields IN-USE,SSID,CHAN,SIGNAL,SECURITY dev wifi)
   WPA3=$(echo "$clist2" | grep "$1" | grep "WPA3")
 
@@ -168,71 +119,119 @@ Select() {
   success=$(echo "$output" | grep successfully)
 
   if [ -z "$success" ]; then
-    output="Activation failed: Secrets were required, but not provided!"
     sudo rm -f /etc/NetworkManager/system-connections/"$1".nmconnection
+    dialog --infobox "\nActivation failed: Secrets were required, but not provided!" 6 $width >/dev/tty3
+    sleep 3
+    MainMenu
   else
-    #bssid=`nmcli -f in-use,bssid dev wifi | grep "*" | awk -F ' ' '{print $2}'`
-    #band=`iw dev | grep -Eo "\([0-9][0-9][0-9][0-9] MHz\)" | tail -1 | cut -c2`
-    #if [[ "$band" == "5" ]]; then
-    #  band="a"
-    #elif [[ "$band" == "2" ]]; then
-    #  band="bg"
-    #fi
-    #sudo sed -i "/ssid\=/abssid=$bssid" /etc/NetworkManager/system-connections/"$1".nmconnection
-    #if [ ! -z "$band" ]; then
-    #  sudo sed -i "/ssid\=/aband=$band" /etc/NetworkManager/system-connections/"$1".nmconnection
-    #fi
-    output="Device successfully activated and connected to Wi-Fi!"
-    cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-    if [[ -z $cur_ap ]]; then
-      cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
+    NetworkInfo "Device successfully activated and connected to: "
+    MainMenu
+  fi
+}
+
+###################################
+# Menu
+###################################
+MainMenu() {
+  if [[ "$(tr -d '\0' </proc/device-tree/compatible)" == *"rk3566"* ]] || [[ "$(tr -d '\0' </proc/device-tree/compatible)" == *"h700"* ]]; then
+    if [[ ! -z $(rfkill -n -o TYPE,SOFT | grep wlan | grep -w unblocked) ]]; then
+      local Wifi_Stat="On"
+      local Wifi_MStat="Off"
+    else
+      local Wifi_Stat="Off"
+      local Wifi_MStat="On"
+      mainMenuTitle="Wifi Disabled"
+    fi
+
+    mainoptions=(1 "Turn Wifi $Wifi_MStat (Currently: $Wifi_Stat)" 2 "Connect to new Wifi connection" 3 "Activate existing Wifi Connection" 4 "Delete exiting connections" 5 "Current Network Info" 6 "Change Country Code" 7 "Exit")
+  else
+    mainoptions=(2 "Connect to new Wifi connection" 3 "Activate existing Wifi Connection" 4 "Delete exiting connections" 5 "Current Network Info" 6 "Change Country Code" 7 "Exit")
+  fi
+
+  if [ $Wifi_Stat == "On" ]; then
+    getCurrentConnectedSSID
+    if [[ -z $CURRENT_CONNECTED_SSID ]]; then
+      mainMenuTitle="Not connected"
+    else
+      mainMenuTitle="Currently connected to \"$CURRENT_CONNECTED_SSID\""
     fi
   fi
 
-  dialog --infobox "\n$output" 6 $width >/dev/tty3
-  sleep 3
-  NetworkInfo
-  Connect
+
+  IFS="$old_ifs"
+  while true; do
+    mainselection=(dialog --backtitle "Wifi Manager: $mainMenuTitle"
+      --title "Main Menu"
+      --no-collapse
+      --clear
+      --cancel-label "Exit"
+      --menu "Please make your selection" $height $width 15)
+
+    mainchoices=$("${mainselection[@]}" "${mainoptions[@]}" 2>&1 >/dev/tty3)
+    if [[ $? != 0 ]]; then
+      chvt 1
+      exit 1
+    fi
+    for mchoice in $mainchoices; do
+      case $mchoice in
+      1) ToggleWifi $Wifi_MStat ;;
+      2) ScanAndConnectMenu ;;
+      3) ActivateExistingMenu ;;
+      4) DeleteMenu ;;
+      5) NetworkInfo ;;
+      6) CountryMenu ;;
+      7) ExitMenu ;;
+      esac
+    done
+  done
 }
 
-ConnectExisting() {
-  cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $cur_ap ]]; then
-    cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-  fi
-
-  dialog --infobox "\nConnecting to Wi-Fi $1 ..." 5 $width >/dev/tty3
-
-  nmcli con down "$cur_ap" >>/dev/null
-  sleep 1
-
-  output=$(nmcli con up "$1")
-
-  success=$(echo "$output" | grep successfully)
-
-  if [ -z "$success" ]; then
-    output="Failed to connect to $1"
+ToggleWifi() {
+  dialog --infobox "\nTurning Wifi $1, please wait..." 5 $width >/dev/tty3
+  if [[ ${1} == "Off" ]]; then
+    sudo systemctl stop NetworkManager &
+    sudo systemctl disable NetworkManager &
+    sudo rfkill block wlan
   else
-    output="Device successfully activated and connected to $1"
-    cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
+    sudo rfkill unblock wlan
+    sudo systemctl enable NetworkManager
+    sudo systemctl start NetworkManager
+    sleep 5
   fi
-
-  dialog --infobox "\n$output" 6 $width >/dev/tty3
-  sleep 3
-  Activate
+  MainMenu
 }
 
-Connect() {
+ActivateExistingMenu() {
+  declare aoptions=()
+  while IFS= read -r -d $'\n' ssid; do
+    aoptions+=("$ssid" ".")
+  done < <(ls -1 /etc/NetworkManager/system-connections/ | sed 's/.\{13\}$//' | sed -e 's/$//')
+
+  while true; do
+    aselection=(dialog --title "Which existing connection would you like to connect to?"
+      --no-collapse
+      --clear
+      --cancel-label "Back"
+      --menu "" $height $width 15)
+
+    achoice=$("${aselection[@]}" "${aoptions[@]}" 2>&1 >/dev/tty3) || MainMenu
+    if [[ $? != 0 ]]; then
+      chvt 1
+      exit 1
+    fi
+
+    # There is only one choice possible
+    connectExisting "$achoice"
+  done
+}
+
+ScanAndConnectMenu() {
   dialog --infobox "\nScanning available Wi-Fi access points..." 5 $width >/dev/tty3
-  sleep 1
   clist=$(sudo nmcli -f ALL --mode tabular --terse --fields IN-USE,SSID,CHAN,SIGNAL,SECURITY dev wifi)
   if [ -z "$clist" ]; then
     clist=$(sudo nmcli -f ALL --mode tabular --terse --fields IN-USE,SSID,CHAN,SIGNAL,SECURITY dev wifi)
   fi
-  cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $cur_ap ]]; then
-    cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-  fi
+  getCurrentConnectedSSID
 
   # Set colon as the delimiter
   IFS=':'
@@ -251,9 +250,7 @@ Connect() {
   done <<<"$clist"
 
   while true; do
-    cselection=(dialog
-      --backtitle "Available Connections: Currently connected to $cur_ap"
-      --title "SSID  IN-USE  CHANNEL  SIGNAL  SECURITY"
+    cselection=(dialog --title "SSID  IN-USE  CHANNEL  SIGNAL  SECURITY"
       --no-collapse
       --clear
       --cancel-label "Back"
@@ -267,26 +264,20 @@ Connect() {
 
     for cchoice in $cchoices; do
       case $cchoice in
-      *) Select $cchoice ;;
+      *) makeConnection $cchoice ;;
       esac
     done
   done
 }
 
-Delete() {
+DeleteMenu() {
   declare deloptions=()
   while IFS= read -r -d $'\n' ssid; do
     deloptions+=("$ssid" ".")
   done < <(ls -1 /etc/NetworkManager/system-connections/ | sed 's/.\{13\}$//' | sed -e 's/$//')
 
-  cur_ap=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $cur_ap ]]; then
-    cur_ap=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-  fi
-
   while true; do
     delselection=(dialog
-      --backtitle "Existing Connections: Currently connected to $cur_ap"
       --title "Which connection would you like to delete?"
       --no-collapse
       --clear
@@ -299,29 +290,26 @@ Delete() {
       chvt 1
       exit 1
     fi
-    DeleteConnect "$delchoice"
+    deleteConnection "$delchoice"
   done
 }
 
 NetworkInfo() {
-
   gateway=$(ip r | grep default | awk '{print $3}')
   currentip=$(ip -f inet addr show wlan0 | sed -En -e 's/.*inet ([0-9.]+).*/\1/p')
-  currentssid=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-  if [[ -z $currentssid ]]; then
-    currentssid=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-  fi
+  getCurrentConnectedSSID
   currentdns=$( (nmcli dev list || nmcli dev show) 2>/dev/null | grep DNS | awk '{print $2}')
+  message=$1
 
-  dialog --clear --backtitle "Your Network Information" --title "" --clear \
-    --msgbox "\n\nSSID: $currentssid\nIP: $currentip\nGateway: $gateway\nDNS: $currentdns" $height $width 2>&1 >/dev/tty3
+  dialog --clear --title "Your Network Information" --clear \
+    --msgbox "\n$message\nSSID: $CURRENT_CONNECTED_SSID\nIP: $currentip\nGateway: $gateway\nDNS: $currentdns" $height $width 2>&1 >/dev/tty3
   if [[ $? != 0 ]]; then
     chvt 1
     exit 1
   fi
 }
 
-Country() {
+CountryMenu() {
 
   cur_country=$(sudo iw reg get | grep country | cut -c 9-10)
   if [[ "$cur_country" == "00" ]]; then
@@ -352,77 +340,27 @@ Country() {
     else
       sudo iw reg set "$cchoice"
     fi
-    Country
+    CountryMenu
   done
 
 }
 
-MainMenu() {
-
-  if [[ "$(tr -d '\0' </proc/device-tree/compatible)" == *"rk3566"* ]]; then
-    if [[ ! -z $(rfkill -n -o TYPE,SOFT | grep wlan | grep -w unblocked) ]]; then
-      local Wifi_Stat="On"
-      local Wifi_MStat="Off"
-      cur_ap="Currently connected to $(iw dev wlan0 info | grep ssid | cut -c 7-30)"
-      if [[ -z $cur_ap ]]; then
-        cur_ap="Currently connected to $(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)"
-      fi
-    else
-      local Wifi_Stat="Off"
-      local Wifi_MStat="On"
-      cur_ap="Wifi Disabled"
-    fi
-
-    mainoptions=(1 "Turn Wifi $Wifi_MStat (Currently: $Wifi_Stat)" 2 "Connect to new Wifi connection" 3 "Activate existing Wifi Connection" 4 "Delete exiting connections" 5 "Current Network Info" 6 "Change Country Code" 7 "Exit")
-  else
-    mainoptions=(2 "Connect to new Wifi connection" 3 "Activate existing Wifi Connection" 4 "Delete exiting connections" 5 "Current Network Info" 6 "Change Country Code" 7 "Exit")
-    C_AP=$(iw dev wlan0 info | grep ssid | cut -c 7-30)
-    if [[ -z $C_AP ]]; then
-      C_AP=$(nmcli -t -f name,device connection show --active | grep wlan0 | cut -d\: -f1)
-    fi
-    cur_ap="Currently connected to $C_AP"
-
-  fi
-  IFS="$old_ifs"
-  while true; do
-    mainselection=(dialog
-      --backtitle "Wifi Manager: $cur_ap"
-      --title "Main Menu"
-      --no-collapse
-      --clear
-      --cancel-label "Select + Start to Exit"
-      --menu "Please make your selection" $height $width 15)
-
-    mainchoices=$("${mainselection[@]}" "${mainoptions[@]}" 2>&1 >/dev/tty3)
-    if [[ $? != 0 ]]; then
-      chvt 1
-      exit 1
-    fi
-    for mchoice in $mainchoices; do
-      case $mchoice in
-      1) ToggleWifi $Wifi_MStat ;;
-      2) Connect ;;
-      3) Activate ;;
-      4) Delete ;;
-      5) NetworkInfo ;;
-      6) Country ;;
-      7) ExitMenu ;;
-      esac
-    done
-  done
+ExitMenu() {
+  printf "\033c" >/dev/tty3
+  ps aux | grep gptokeyb2 | grep -v grep | awk '{print $1}' | xargs kill -9
+  chvt 1
+  exit 0
 }
 
-#
-# Joystick controls
-#
-# only one instance
-
+###################################
+# Joystick controls (only one instance)
+###################################
 sudo chmod 666 /dev/uinput
-export SDL_GAMECONTROLLERCONFIG_FILE="/opt/inttools/gamecontrollerdb.txt"
-if [[ ! -z $(ps aux | grep gptokeyb | grep -v grep | awk '{print $1}') ]]; then
-  ps aux | grep gptokeyb | grep -v grep | awk '{print $1}' | xargs kill -9
+export SDL_GAMECONTROLLERCONFIG_FILE="/root/gamecontrollerdb.txt"
+if [[ ! -z $(ps aux | grep gptokeyb2 | grep -v grep | awk '{print $1}') ]]; then
+  ps aux | grep gptokeyb2 | grep -v grep | awk '{print $1}' | xargs kill -9
 fi
-/opt/inttools/gptokeyb -1 "Wifi.sh" -c "/opt/inttools/keys.gptk" >/dev/null 2>&1 &
+/usr/local/bin/gptokeyb2 -1 "Wifi.sh" -c "/usr/local/bin/Wifi-gptokeyb2.ini" >/dev/null 2>&1 &
 printf "\033c" >/dev/tty3
 dialog --clear
 trap ExitMenu EXIT

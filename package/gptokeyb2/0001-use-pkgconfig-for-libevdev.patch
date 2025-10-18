@@ -1,0 +1,26 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -12,7 +12,16 @@
+ # NOTE: you can specify custom installation locations of the libraries
+ # by setting CMake variables -DSDL_INCLUDE_DIR=... or -DLIBEVDEV_INCLUDE_DIR=...
+ # on the command line
+-find_package(LIBEVDEV REQUIRED)
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(LIBEVDEV REQUIRED libevdev)
++
++include_directories(${LIBEVDEV_INCLUDE_DIRS})
++link_directories(${LIBEVDEV_LIBRARY_DIRS})
++add_definitions(${LIBEVDEV_CFLAGS_OTHER})
++
++message(STATUS "Using libevdev (pkg-config)")
++message(STATUS "  include dirs: ${LIBEVDEV_INCLUDE_DIRS}")
++message(STATUS "  libraries: ${LIBEVDEV_LIBRARIES}")
+ find_package(SDL2 REQUIRED)
+ 
+ add_subdirectory(interpose)
+@@ -41,4 +41,4 @@ target_link_libraries(gptokeyb2 PRIVATE
+     interpose
+-    ${LIBEVDEV_LIBRARY}
++    ${LIBEVDEV_LIBRARIES}
+     ${SDL2_LIBRARIES}
+     m
